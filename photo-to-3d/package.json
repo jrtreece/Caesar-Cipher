@@ -1,0 +1,17 @@
+{
+  "name": "photo-to-3d",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Turn any picture into a realistic, exportable 3D model — entirely in the browser.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --format=iife --minify --sourcemap --outfile=dist/app.js",
+    "dev": "esbuild src/main.js --bundle --format=iife --sourcemap --outfile=dist/app.js --watch --servedir=."
+  },
+  "dependencies": {
+    "three": "^0.166.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0"
+  }
+}

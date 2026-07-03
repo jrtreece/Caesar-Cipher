@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relief — Picture to 3D Model</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%234f8cff' d='M50 8 92 30v40L50 92 8 70V30z'/%3E%3Cpath fill='%237fb0ff' d='M50 8 92 30 50 52 8 30z'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #14171c;
+    --panel: #1c2027;
+    --panel-2: #232833;
+    --line: #2e3542;
+    --text: #e8ebf0;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --accent-2: #7fb0ff;
+    --error: #ff6b6b;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    overflow: hidden;
+  }
+
+  .fatal {
+    grid-column: 1 / -1;
+    align-self: center;
+    justify-self: center;
+    max-width: 40ch;
+    padding: 24px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    text-align: center;
+  }
+
+  /* ------------------------------ Sidebar ------------------------------ */
+  aside {
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    padding: 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  h1 {
+    font-size: 17px;
+    margin: 0;
+    letter-spacing: 0.2px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  h1 .tag { font-size: 11px; color: var(--muted); font-weight: 500; }
+  h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin: 4px 0 0;
+  }
+
+  #drop-zone {
+    border: 1.5px dashed var(--line);
+    border-radius: var(--radius);
+    padding: 18px 14px;
+    text-align: center;
+    color: var(--muted);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #drop-zone:hover, #drop-zone:focus-visible, body.dragging #drop-zone {
+    border-color: var(--accent);
+    background: rgba(79, 140, 255, 0.08);
+    color: var(--accent-2);
+    outline: none;
+  }
+  #drop-zone strong { color: var(--text); display: block; margin-bottom: 4px; }
+  body.dragging::after {
+    content: "Drop the picture anywhere";
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(20, 23, 28, 0.75);
+    border: 3px dashed var(--accent);
+    font-size: 20px;
+    color: var(--accent-2);
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  #thumb {
+    width: 100%;
+    height: 110px;
+    border-radius: var(--radius);
+    background: var(--panel-2);
+    display: none;
+  }
+  body.has-image #thumb { display: block; }
+
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .row label { color: var(--text); }
+  .row output { color: var(--muted); font-variant-numeric: tabular-nums; }
+  input[type="range"] {
+    grid-column: 1 / -1;
+    width: 100%;
+    accent-color: var(--accent);
+    margin: 0;
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+  }
+  .check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+  .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+
+  select {
+    width: 100%;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+  }
+
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 10px;
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: #2a3040; border-color: #3a4356; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #3f7df2; }
+  body:not(.has-model) .needs-model { opacity: 0.45; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    font-size: 13px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+  }
+  .stats b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  #status {
+    margin-top: auto;
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    min-height: 1.4em;
+  }
+  #status.error { color: var(--error); }
+
+  /* ------------------------------ Viewport ----------------------------- */
+  #viewport { position: relative; overflow: hidden; }
+  #viewport canvas { display: block; }
+  .hint {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    background: rgba(28, 32, 39, 0.82);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 12px;
+    padding: 6px 14px;
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+  }
+  body.has-model .hint.empty { display: none; }
+  body:not(.has-model) .hint.orbit { display: none; }
+
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow: auto; }
+    aside { border-right: none; border-bottom: 1px solid var(--line); max-height: 55vh; }
+    #viewport { min-height: 45vh; }
+  }
+</style>
+</head>
+<body>
+  <aside>
+    <h1>Relief <span class="tag">picture → 3D model</span></h1>
+
+    <div id="drop-zone" role="button" tabindex="0" aria-label="Choose or drop a picture">
+      <strong>Drop a picture here</strong>
+      or click to browse · paste works too
+    </div>
+    <input id="file-input" type="file" accept="image/*" hidden>
+    <canvas id="thumb" width="284" height="110"></canvas>
+
+    <h2>Shape</h2>
+    <div class="row">
+      <label for="depth">Relief depth</label><output id="depth-value"></output>
+      <input id="depth" type="range" min="1" max="60" step="1" value="14">
+    </div>
+    <div class="row">
+      <label for="size">Model width</label><output id="size-value"></output>
+      <input id="size" type="range" min="40" max="300" step="5" value="120">
+    </div>
+    <div class="row">
+      <label for="base">Base thickness</label><output id="base-value"></output>
+      <input id="base" type="range" min="0.4" max="10" step="0.2" value="3">
+    </div>
+    <div class="row">
+      <label for="smoothing">Smoothing</label><output id="smoothing-value"></output>
+      <input id="smoothing" type="range" min="0" max="6" step="0.5" value="1.5">
+    </div>
+    <div class="row">
+      <label for="resolution">Detail (grid)</label><output id="resolution-value"></output>
+      <input id="resolution" type="range" min="64" max="512" step="16" value="256">
+    </div>
+    <div class="checks">
+      <label class="check"><input id="invert" type="checkbox"> Invert height</label>
+      <label class="check"><input id="solid" type="checkbox" checked> Solid (printable)</label>
+    </div>
+
+    <h2>Appearance</h2>
+    <select id="material" aria-label="Material preset"></select>
+    <div class="checks">
+      <label class="check"><input id="texture" type="checkbox" checked> Photo texture</label>
+      <label class="check"><input id="wireframe" type="checkbox"> Wireframe</label>
+      <label class="check"><input id="autorotate" type="checkbox"> Auto-rotate</label>
+    </div>
+    <button id="frame" class="needs-model">Re-center view</button>
+
+    <h2>Model</h2>
+    <div class="stats">
+      <span>Triangles</span><b id="stat-tris">—</b>
+      <span>Vertices</span><b id="stat-verts">—</b>
+      <span>Print size</span><b id="stat-size">—</b>
+    </div>
+
+    <h2>Export</h2>
+    <div class="buttons needs-model">
+      <button id="export-stl" class="primary">STL · 3D print</button>
+      <button id="export-glb">GLB · scene</button>
+      <button id="export-obj">OBJ</button>
+      <button id="export-png">PNG render</button>
+    </div>
+
+    <div id="status" role="status" aria-live="polite"></div>
+  </aside>
+
+  <main id="viewport">
+    <div class="hint empty">Load a picture to see it as a 3D model</div>
+    <div class="hint orbit">Drag to orbit · scroll to zoom · right-drag to pan</div>
+  </main>
+
+  <script src="dist/app.js"></script>
+</body>
+</html>
