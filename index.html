@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#02030a">
+<title>AETHERION — a three.js cosmos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: #02030a;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+  #scene { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+
+  /* vignette + subtle scanline atmosphere, zero GPU cost */
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center,
+      rgba(0,0,0,0) 55%, rgba(2,3,10,0.55) 100%);
+  }
+
+  #hud {
+    position: fixed; inset: 0; pointer-events: none;
+    display: flex; flex-direction: column;
+    justify-content: space-between; align-items: center;
+    padding: calc(env(safe-area-inset-top, 0px) + 28px) 16px
+             calc(env(safe-area-inset-bottom, 0px) + 24px);
+    color: #cfe6ff;
+  }
+  #title {
+    font-size: clamp(20px, 5.5vw, 46px);
+    font-weight: 200;
+    white-space: nowrap;
+    letter-spacing: clamp(5px, 2vw, 20px);
+    text-indent: clamp(5px, 2vw, 20px); /* balance letter-spacing */
+    text-transform: uppercase;
+    background: linear-gradient(90deg, #7ee0ff, #c792ff 50%, #ff8ad8);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    filter: drop-shadow(0 0 18px rgba(140,120,255,0.45));
+    animation: breathe 6s ease-in-out infinite;
+  }
+  #subtitle {
+    margin-top: 8px;
+    font-size: clamp(9px, 2.2vw, 13px);
+    letter-spacing: clamp(1.5px, 0.8vw, 6px);
+    text-transform: uppercase;
+    color: rgba(180,205,255,0.55);
+  }
+  #hint {
+    font-size: clamp(9px, 2.4vw, 13px);
+    letter-spacing: 1.5px;
+    color: rgba(170,195,240,0.65);
+    text-align: center;
+    animation: breathe 4s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100% { opacity: 0.85; } 50% { opacity: 0.5; } }
+
+  #loader {
+    position: fixed; inset: 0; z-index: 10;
+    background: #02030a;
+    display: flex; flex-direction: column; gap: 18px;
+    align-items: center; justify-content: center;
+    color: #9db8e8; letter-spacing: 6px; font-size: 12px;
+    transition: opacity 1.2s ease;
+  }
+  #loader.done { opacity: 0; pointer-events: none; }
+  .orbit-spin {
+    width: 46px; height: 46px; border-radius: 50%;
+    border: 1px solid rgba(130,160,255,0.25);
+    border-top-color: #8ecbff;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #err {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center; text-align: center;
+    color: #ffb0c0; background: #02030a; padding: 24px; line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="vignette"></div>
+
+<div id="hud">
+  <div style="text-align:center">
+    <div id="title">Aetherion</div>
+    <div id="subtitle">procedural galaxy &middot; 140,000 stars</div>
+  </div>
+  <div id="hint">drag to orbit &nbsp;&middot;&nbsp; pinch to zoom &nbsp;&middot;&nbsp; tap for supernova</div>
+</div>
+
+<div id="loader"><div class="orbit-spin"></div><div>ENTERING&nbsp;THE&nbsp;VOID</div></div>
+<div id="err"><div>Your browser could not start WebGL.<br>Try updating it, or opening this page in Chrome or Safari.</div></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.min.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ---------------------------------------------------------------- setup -- */
+
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 1 && Math.min(innerWidth, innerHeight) < 900);
+
+const Q = isMobile
+  ? { galaxy: 70000,  stars: 3500, dust: 5000,  ratio: Math.min(devicePixelRatio, 1.8), bloomScale: 0.55 }
+  : { galaxy: 140000, stars: 7000, dust: 12000, ratio: Math.min(devicePixelRatio, 2),   bloomScale: 0.8  };
+
+document.getElementById('subtitle').textContent =
+  `procedural galaxy · ${(Q.galaxy + Q.stars + Q.dust).toLocaleString()} particles`;
+
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({
+    canvas: document.getElementById('scene'),
+    antialias: false,
+    powerPreference: 'high-performance',
+  });
+} catch (e) {
+  document.getElementById('err').style.display = 'flex';
+  document.getElementById('loader').classList.add('done');
+  throw e;
+}
+renderer.setPixelRatio(Q.ratio);
+renderer.setSize(innerWidth, innerHeight, false); // CSS keeps the canvas full-viewport
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x02030a);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 400);
+// portrait phones start further back so the whole galaxy fits
+const startDist = innerWidth / innerHeight < 0.9 ? 21 : 15.5;
+camera.position.set(0, startDist * 0.48, startDist);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.045;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.45;
+controls.minDistance = 3.2;
+controls.maxDistance = 46;
+controls.enablePan = false;
+
+/* --------------------------------------------------------- shader chunks -- */
+
+// Ashima 3D simplex noise (public domain)
+const NOISE_GLSL = `
+vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0); const vec4 D=vec4(0.0,0.5,1.0,2.0);
+  vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.0-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy;
+  i=mod289(i);
+  vec4 p=permute(permute(permute(i.z+vec4(0.0,i1.z,i2.z,1.0))+i.y+vec4(0.0,i1.y,i2.y,1.0))+i.x+vec4(0.0,i1.x,i2.x,1.0));
+  float n_=0.142857142857; vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z);
+  vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.0-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.0+1.0; vec4 s1=floor(b1)*2.0+1.0; vec4 sh=-step(h,vec4(0.0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+  vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0); m=m*m;
+  return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}`;
+
+const POINT_FRAG = `
+varying vec3 vColor;
+void main(){
+  float d = length(gl_PointCoord - vec2(0.5));
+  if (d > 0.5) discard;
+  float a = pow(1.0 - d * 2.0, 2.2);
+  gl_FragColor = vec4(vColor, a);
+}`;
+
+/* ---------------------------------------------------------------- galaxy -- */
+
+function buildGalaxy() {
+  const count = Q.galaxy;
+  const branches = 4;
+  const radius = 13;
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+  const scl = new Float32Array(count);
+  const rnd = new Float32Array(count);
+
+  const inner = new THREE.Color(0xffb4e2);
+  const mid   = new THREE.Color(0xb96bff);
+  const outer = new THREE.Color(0x3fb6ff);
+  const c = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    const r = Math.pow(Math.random(), 1.6) * radius;
+    const branch = ((i % branches) / branches) * Math.PI * 2;
+    const spin = r * 0.55;
+    // scatter tightens toward the core, flares at the rim
+    const spread = 0.18 + (r / radius) * 0.9;
+    const rx = Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? 1 : -1) * spread;
+    const ry = Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? 1 : -1) * spread * 0.45;
+    const rz = Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? 1 : -1) * spread;
+
+    pos[i * 3]     = Math.cos(branch + spin) * r + rx;
+    pos[i * 3 + 1] = ry * (1 + r * 0.12);
+    pos[i * 3 + 2] = Math.sin(branch + spin) * r + rz;
+
+    const t = r / radius;
+    if (t < 0.45) c.copy(inner).lerp(mid, t / 0.45);
+    else c.copy(mid).lerp(outer, (t - 0.45) / 0.55);
+    if (Math.random() < 0.03) c.setRGB(1.5, 1.5, 1.6); // hot white sparks for the bloom to catch
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+
+    scl[i] = 0.4 + Math.random() * Math.random() * 1.8;
+    rnd[i] = Math.random();
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('aScale', new THREE.BufferAttribute(scl, 1));
+  geo.setAttribute('aRand', new THREE.BufferAttribute(rnd, 1));
+
+  const mat = new THREE.ShaderMaterial({
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    uniforms: {
+      uTime: { value: 0 },
+      uSize: { value: isMobile ? 26 : 30 },
+    },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uSize;
+      attribute vec3 aColor;
+      attribute float aScale;
+      attribute float aRand;
+      varying vec3 vColor;
+      void main(){
+        vec3 p = position;
+        float r = length(p.xz);
+        // differential rotation: the core spins faster than the rim
+        float angle = atan(p.x, p.z) + uTime * (0.02 + 0.35 / (r + 0.6));
+        p.x = sin(angle) * r;
+        p.z = cos(angle) * r;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float tw = 0.72 + 0.28 * sin(uTime * (1.0 + aRand * 4.0) + aRand * 120.0);
+        gl_PointSize = uSize * aScale * tw / -mv.z;
+        vColor = aColor;
+      }`,
+    fragmentShader: POINT_FRAG,
+  });
+
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+  return mat;
+}
+const galaxyMat = buildGalaxy();
+
+/* -------------------------------------------------- interstellar dust fog -- */
+/* a faint cool-toned cloud wrapping the galaxy plane gives it volume */
+
+function buildDust() {
+  const count = Q.dust;
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+  const scl = new Float32Array(count);
+  const rnd = new Float32Array(count);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const r = 2 + Math.pow(Math.random(), 0.7) * 16;
+    const a = Math.random() * Math.PI * 2;
+    pos[i * 3]     = Math.cos(a) * r;
+    pos[i * 3 + 1] = (Math.random() - 0.5) * (0.6 + r * 0.28);
+    pos[i * 3 + 2] = Math.sin(a) * r;
+    c.setHSL(0.62 + Math.random() * 0.16, 0.7, 0.16 + Math.random() * 0.1);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    scl[i] = 2 + Math.random() * 6;
+    rnd[i] = Math.random();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('aScale', new THREE.BufferAttribute(scl, 1));
+  geo.setAttribute('aRand', new THREE.BufferAttribute(rnd, 1));
+  const mat = new THREE.ShaderMaterial({
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    uniforms: { uTime: { value: 0 }, uSize: { value: 20 } },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uSize;
+      attribute vec3 aColor;
+      attribute float aScale;
+      attribute float aRand;
+      varying vec3 vColor;
+      void main(){
+        vec3 p = position;
+        float r = length(p.xz);
+        float angle = atan(p.x, p.z) + uTime * (0.015 + 0.18 / (r + 0.8));
+        p.x = sin(angle) * r;
+        p.z = cos(angle) * r;
+        p.y += sin(uTime * 0.3 + aRand * 40.0) * 0.15;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = uSize * aScale / -mv.z;
+        vColor = aColor * 0.16;
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main(){
+        float d = length(gl_PointCoord - vec2(0.5));
+        if (d > 0.5) discard;
+        float a = pow(1.0 - d * 2.0, 3.0) * 0.35;
+        gl_FragColor = vec4(vColor, a);
+      }`,
+  });
+  scene.add(new THREE.Points(geo, mat));
+  return mat;
+}
+const dustMat = buildDust();
+
+/* ------------------------------------------------------------- core star -- */
+
+const starUniforms = {
+  uTime: { value: 0 },
+  uBoost: { value: 0 }, // supernova flash
+};
+const starMat = new THREE.ShaderMaterial({
+  uniforms: starUniforms,
+  vertexShader: `
+    uniform float uTime;
+    varying vec3 vNormal;
+    varying vec3 vPos;
+    varying vec3 vView;
+    ${NOISE_GLSL}
+    void main(){
+      vPos = position;
+      float wobble = snoise(position * 2.0 + uTime * 0.4) * 0.06;
+      vec3 p = position + normal * wobble;
+      vNormal = normalize(normalMatrix * normal);
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      vView = -mv.xyz;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    uniform float uTime;
+    uniform float uBoost;
+    varying vec3 vNormal;
+    varying vec3 vPos;
+    varying vec3 vView;
+    ${NOISE_GLSL}
+    void main(){
+      float n = snoise(vPos * 2.6 + vec3(0.0, 0.0, uTime * 0.45));
+      n += 0.5 * snoise(vPos * 6.0 - vec3(uTime * 0.6));
+      n = n * 0.5 + 0.5;
+      vec3 deep  = vec3(0.04, 0.28, 0.8);
+      vec3 hot   = vec3(0.55, 0.85, 1.0);
+      vec3 white = vec3(1.25, 1.3, 1.5);
+      vec3 col = mix(deep, hot, n);
+      col = mix(col, white, pow(n, 3.0));
+      float fres = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 2.2);
+      col += fres * vec3(0.7, 0.5, 1.4) * 1.1;
+      col *= 1.0 + uBoost * 3.0;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+});
+const star = new THREE.Mesh(new THREE.SphereGeometry(1.15, 48, 48), starMat);
+scene.add(star);
+
+// halo sprite behind the star
+function makeGlowTexture(stops) {
+  const s = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  for (const [o, c] of stops) g.addColorStop(o, c);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const glowTex = makeGlowTexture([
+  [0,    'rgba(190,230,255,0.85)'],
+  [0.25, 'rgba(120,150,255,0.35)'],
+  [0.6,  'rgba(90,80,220,0.10)'],
+  [1,    'rgba(0,0,0,0)'],
+]);
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+}));
+halo.scale.setScalar(7);
+scene.add(halo);
+
+/* --------------------------------------------------------------- crystals -- */
+
+const crystalFrag = `
+  uniform float uTime;
+  uniform float uHue;
+  varying vec3 vViewPos;
+  void main(){
+    // faceted normals from screen-space derivatives -> gem-like shading
+    vec3 nrm = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+    vec3 viewDir = normalize(-vViewPos);
+    float fres = pow(1.0 - abs(dot(nrm, viewDir)), 1.6);
+    float facet = abs(dot(nrm, viewDir));
+    vec3 iri = 0.5 + 0.5 * cos(6.28318 * (fres * 1.2 + uHue + uTime * 0.03 + vec3(0.0, 0.33, 0.67)));
+    vec3 col = iri * (0.12 + fres * 1.9) + facet * facet * iri * 0.25;
+    gl_FragColor = vec4(col, 0.9);
+  }`;
+const crystalVert = `
+  varying vec3 vViewPos;
+  void main(){
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vViewPos = mv.xyz;
+    gl_Position = projectionMatrix * mv;
+  }`;
+
+const crystals = [];
+const crystalGroup = new THREE.Group();
+scene.add(crystalGroup);
+{
+  const geoms = [
+    new THREE.OctahedronGeometry(0.34, 0),
+    new THREE.IcosahedronGeometry(0.3, 0),
+    new THREE.TetrahedronGeometry(0.38, 0),
+  ];
+  for (let i = 0; i < 10; i++) {
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uHue: { value: Math.random() } },
+      vertexShader: crystalVert,
+      fragmentShader: crystalFrag,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const m = new THREE.Mesh(geoms[i % geoms.length], mat);
+    const s = 0.7 + Math.random() * 1.1;
+    m.scale.setScalar(s);
+    crystalGroup.add(m);
+    crystals.push({
+      mesh: m, mat,
+      orbitR: 2.6 + Math.random() * 4.2,
+      speed: (0.12 + Math.random() * 0.22) * (Math.random() < 0.5 ? 1 : -1),
+      phase: Math.random() * Math.PI * 2,
+      incline: (Math.random() - 0.5) * 0.9,
+      bob: Math.random() * Math.PI * 2,
+      spin: new THREE.Vector3(Math.random(), Math.random(), Math.random()).multiplyScalar(0.8),
+    });
+  }
+}
+
+/* ------------------------------------------------------- background stars -- */
+
+function buildStars() {
+  const count = Q.stars;
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+  const scl = new Float32Array(count);
+  const rnd = new Float32Array(count);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const v = new THREE.Vector3().randomDirection().multiplyScalar(70 + Math.random() * 90);
+    pos[i * 3] = v.x; pos[i * 3 + 1] = v.y; pos[i * 3 + 2] = v.z;
+    c.setHSL(0.55 + Math.random() * 0.25, Math.random() * 0.6, 0.7 + Math.random() * 0.3);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    scl[i] = 0.5 + Math.random() * 1.6;
+    rnd[i] = Math.random();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('aScale', new THREE.BufferAttribute(scl, 1));
+  geo.setAttribute('aRand', new THREE.BufferAttribute(rnd, 1));
+  const mat = new THREE.ShaderMaterial({
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    uniforms: { uTime: { value: 0 }, uSize: { value: 110 } },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uSize;
+      attribute vec3 aColor;
+      attribute float aScale;
+      attribute float aRand;
+      varying vec3 vColor;
+      void main(){
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float tw = 0.55 + 0.45 * sin(uTime * (0.6 + aRand * 3.0) + aRand * 220.0);
+        gl_PointSize = uSize * aScale * tw / -mv.z;
+        vColor = aColor * (0.5 + tw * 0.5);
+      }`,
+    fragmentShader: POINT_FRAG,
+  });
+  scene.add(new THREE.Points(geo, mat));
+  return mat;
+}
+const starsMat = buildStars();
+
+/* ---------------------------------------------------------- nebula clouds -- */
+
+const nebulaTex = makeGlowTexture([
+  [0,   'rgba(255,255,255,0.30)'],
+  [0.4, 'rgba(255,255,255,0.10)'],
+  [1,   'rgba(255,255,255,0)'],
+]);
+const nebulae = [];
+{
+  const hues = [0.58, 0.66, 0.74, 0.85, 0.92];
+  for (let i = 0; i < (isMobile ? 10 : 16); i++) {
+    const c = new THREE.Color().setHSL(hues[i % hues.length], 0.85, 0.5);
+    const mat = new THREE.SpriteMaterial({
+      map: nebulaTex, color: c,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      opacity: 0.02 + Math.random() * 0.035,
+      rotation: Math.random() * Math.PI * 2,
+    });
+    const sp = new THREE.Sprite(mat);
+    const r = 8 + Math.random() * 14;
+    const a = Math.random() * Math.PI * 2;
+    sp.position.set(Math.cos(a) * r, (Math.random() - 0.5) * 5, Math.sin(a) * r);
+    sp.scale.setScalar(7 + Math.random() * 12);
+    scene.add(sp);
+    nebulae.push({ sp, rotSpeed: (Math.random() - 0.5) * 0.06 });
+  }
+}
+
+/* -------------------------------------------------- energy ring + flare -- */
+
+// tilted accretion ring of swirling energy around the star
+const ringUniforms = { uTime: { value: 0 } };
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(1.7, 3.1, 160, 1),
+  new THREE.ShaderMaterial({
+    uniforms: ringUniforms,
+    side: THREE.DoubleSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      varying vec2 vP;
+      void main(){
+        vP = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform float uTime;
+      varying vec2 vP;
+      void main(){
+        float r = length(vP);
+        float t = clamp((r - 1.7) / 1.4, 0.0, 1.0);
+        float band = sin(t * 3.14159);          // fade both edges
+        float ang = atan(vP.y, vP.x);
+        float swirl = 0.55
+          + 0.45 * sin(ang * 3.0 - uTime * 1.2 + r * 4.0)
+          * sin(ang * 7.0 + uTime * 0.7);
+        vec3 col = mix(vec3(0.25, 0.6, 1.2), vec3(0.9, 0.4, 1.2), t);
+        float a = band * band * swirl * 0.5;
+        gl_FragColor = vec4(col * swirl, a);
+      }`,
+  })
+);
+ring.rotation.set(-Math.PI / 2 + 0.42, 0, 0.2);
+scene.add(ring);
+
+// slowly rotating cross-flare on the core
+function makeFlareTexture() {
+  const s = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  ctx.translate(s / 2, s / 2);
+  for (let i = 0; i < 2; i++) {
+    const g = ctx.createLinearGradient(-s / 2, 0, s / 2, 0);
+    g.addColorStop(0, 'rgba(150,190,255,0)');
+    g.addColorStop(0.5, 'rgba(220,235,255,0.9)');
+    g.addColorStop(1, 'rgba(150,190,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(-s / 2, -2.2, s, 4.4);
+    ctx.rotate(Math.PI / 2);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const flare = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: makeFlareTexture(), blending: THREE.AdditiveBlending,
+  depthWrite: false, transparent: true, opacity: 0.75,
+}));
+flare.scale.setScalar(6.5);
+scene.add(flare);
+
+/* ------------------------------------------------------------------ comet -- */
+
+// a comet on a tilted elliptical orbit, dragging a fading particle trail
+const TRAIL_N = 90;
+const cometTrailGeo = new THREE.BufferGeometry();
+{
+  const pos = new Float32Array(TRAIL_N * 3);
+  const col = new Float32Array(TRAIL_N * 3);
+  const scl = new Float32Array(TRAIL_N);
+  for (let i = 0; i < TRAIL_N; i++) {
+    const f = 1 - i / TRAIL_N; // head = brightest
+    col[i * 3] = 0.55 * f * f;
+    col[i * 3 + 1] = 0.9 * f * f;
+    col[i * 3 + 2] = 1.2 * f * f;
+    scl[i] = 0.4 + 1.6 * f;
+  }
+  cometTrailGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  cometTrailGeo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  cometTrailGeo.setAttribute('aScale', new THREE.BufferAttribute(scl, 1));
+}
+const cometTrail = new THREE.Points(cometTrailGeo, new THREE.ShaderMaterial({
+  depthWrite: false, blending: THREE.AdditiveBlending, transparent: true,
+  uniforms: { uSize: { value: 60 } },
+  vertexShader: `
+    uniform float uSize;
+    attribute vec3 aColor;
+    attribute float aScale;
+    varying vec3 vColor;
+    void main(){
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = uSize * aScale / -mv.z;
+      vColor = aColor;
+    }`,
+  fragmentShader: POINT_FRAG,
+}));
+scene.add(cometTrail);
+const cometHead = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false,
+  transparent: true, opacity: 0.95,
+}));
+cometHead.scale.setScalar(2.2);
+scene.add(cometHead);
+
+function cometPos(t, out) {
+  const a = t * 0.31;
+  out.set(Math.cos(a) * 9.5, Math.sin(a * 1.7) * 2.6 + Math.sin(a) * 1.4, Math.sin(a) * 6.2);
+  return out;
+}
+const _cv = new THREE.Vector3();
+
+/* ---------------------------------------------------------- shooting stars -- */
+
+const meteors = [];
+{
+  for (let i = 0; i < 6; i++) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xbfe8ff, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const line = new THREE.Line(geo, mat);
+    scene.add(line);
+    const head = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false,
+      transparent: true, opacity: 0,
+    }));
+    head.scale.setScalar(1.4);
+    scene.add(head);
+    meteors.push({ line, head, life: -Math.random() * 8, pos: new THREE.Vector3(), vel: new THREE.Vector3() });
+  }
+}
+function respawnMeteor(m) {
+  m.pos.randomDirection().multiplyScalar(34 + Math.random() * 20);
+  m.pos.y = Math.abs(m.pos.y) * 0.6 + 6;
+  m.vel.randomDirection();
+  m.vel.y = -Math.abs(m.vel.y) - 0.4;
+  m.vel.normalize().multiplyScalar(26 + Math.random() * 18);
+  m.life = 1.6 + Math.random() * 0.8;
+}
+
+/* ---------------------------------------------- supernova: wave + burst -- */
+
+const shockwaves = [];
+const shockGeo = new THREE.RingGeometry(0.92, 1.0, 96);
+function makeShockwave() {
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x9fdcff, transparent: true, opacity: 0,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(shockGeo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.visible = false;
+  scene.add(mesh);
+  return { mesh, mat, t: 1e9 };
+}
+for (let i = 0; i < 3; i++) shockwaves.push(makeShockwave());
+
+const BURST_N = isMobile ? 300 : 600;
+const burstGeo = new THREE.BufferGeometry();
+burstGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(BURST_N * 3), 3));
+burstGeo.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(BURST_N * 3), 3));
+burstGeo.setAttribute('aScale', new THREE.BufferAttribute(new Float32Array(BURST_N), 1));
+const burstVel = new Float32Array(BURST_N * 3);
+const burstMat = new THREE.ShaderMaterial({
+  depthWrite: false, blending: THREE.AdditiveBlending, transparent: true,
+  uniforms: { uSize: { value: 46 }, uFade: { value: 0 } },
+  vertexShader: `
+    uniform float uSize;
+    uniform float uFade;
+    attribute vec3 aColor;
+    attribute float aScale;
+    varying vec3 vColor;
+    void main(){
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = uSize * aScale * uFade / -mv.z;
+      vColor = aColor * uFade;
+    }`,
+  fragmentShader: POINT_FRAG,
+});
+const burst = new THREE.Points(burstGeo, burstMat);
+burst.visible = false;
+scene.add(burst);
+let burstT = 1e9;
+
+function supernova() {
+  // shockwave ring
+  const w = shockwaves.find(s => s.t > 1) || shockwaves[0];
+  w.t = 0;
+  w.mesh.visible = true;
+  // particle burst
+  const pos = burstGeo.attributes.position.array;
+  const col = burstGeo.attributes.aColor.array;
+  const scl = burstGeo.attributes.aScale.array;
+  const c = new THREE.Color();
+  for (let i = 0; i < BURST_N; i++) {
+    pos[i * 3] = 0; pos[i * 3 + 1] = 0; pos[i * 3 + 2] = 0;
+    const v = new THREE.Vector3().randomDirection()
+      .multiplyScalar(3.5 + Math.random() * 9);
+    v.y *= 0.75;
+    burstVel[i * 3] = v.x; burstVel[i * 3 + 1] = v.y; burstVel[i * 3 + 2] = v.z;
+    c.setHSL(0.5 + Math.random() * 0.4, 1, 0.6 + Math.random() * 0.35);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    scl[i] = 0.6 + Math.random() * 1.8;
+  }
+  burstGeo.attributes.position.needsUpdate = true;
+  burstGeo.attributes.aColor.needsUpdate = true;
+  burstGeo.attributes.aScale.needsUpdate = true;
+  burst.visible = true;
+  burstT = 0;
+  starUniforms.uBoost.value = 1;
+  bloom.strength = BLOOM_BASE + 1.1;
+}
+
+// tap (not drag) triggers a supernova
+let downAt = 0, downX = 0, downY = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  downAt = performance.now(); downX = e.clientX; downY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  const dt = performance.now() - downAt;
+  const dist = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (dt < 300 && dist < 12) supernova();
+});
+
+/* ----------------------------------------------------------- post effects -- */
+
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(Q.ratio);
+composer.addPass(new RenderPass(scene, camera));
+const BLOOM_BASE = 0.85;
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth * Q.bloomScale, innerHeight * Q.bloomScale),
+  BLOOM_BASE, 0.75, 0.0
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+/* ----------------------------------------------------------------- resize -- */
+
+function onResize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight, false);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth * Q.bloomScale, innerHeight * Q.bloomScale);
+}
+addEventListener('resize', onResize);
+addEventListener('orientationchange', () => setTimeout(onResize, 250));
+
+/* -------------------------------------------------------------- main loop -- */
+
+const clock = new THREE.Clock();
+let frames = 0, fpsAccum = 0, degraded = false;
+
+function tick() {
+  requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  galaxyMat.uniforms.uTime.value = t;
+  dustMat.uniforms.uTime.value = t;
+  starsMat.uniforms.uTime.value = t;
+  starUniforms.uTime.value = t;
+  starUniforms.uBoost.value *= Math.pow(0.15, dt); // flash decay
+
+  // star breathing + halo pulse
+  const pulse = 1 + Math.sin(t * 1.4) * 0.035 + starUniforms.uBoost.value * 0.35;
+  star.scale.setScalar(pulse);
+  halo.scale.setScalar(7 * (1 + Math.sin(t * 1.4) * 0.06) * (1 + starUniforms.uBoost.value * 0.6));
+
+  // crystals orbit
+  for (const cr of crystals) {
+    const a = cr.phase + t * cr.speed;
+    const x = Math.cos(a) * cr.orbitR;
+    const z = Math.sin(a) * cr.orbitR;
+    const y = Math.sin(a * 2 + cr.bob) * 0.6 + Math.sin(t * 0.7 + cr.bob) * 0.25 + x * cr.incline * 0.25;
+    cr.mesh.position.set(x, y, z);
+    cr.mesh.rotation.x += cr.spin.x * dt;
+    cr.mesh.rotation.y += cr.spin.y * dt;
+    cr.mesh.rotation.z += cr.spin.z * dt;
+    cr.mat.uniforms.uTime.value = t;
+  }
+
+  // nebulae slowly swirl
+  for (const n of nebulae) n.sp.material.rotation += n.rotSpeed * dt;
+
+  // energy ring + flare
+  ringUniforms.uTime.value = t;
+  ring.rotation.z += dt * 0.05;
+  flare.material.rotation = t * 0.1;
+  flare.material.opacity = 0.6 + Math.sin(t * 1.4) * 0.12 + starUniforms.uBoost.value * 0.4;
+  flare.scale.setScalar(6.5 * (1 + starUniforms.uBoost.value * 0.8));
+
+  // comet: head follows the orbit, trail samples the path behind it
+  cometPos(t, _cv);
+  cometHead.position.copy(_cv);
+  {
+    const p = cometTrailGeo.attributes.position.array;
+    for (let i = 0; i < TRAIL_N; i++) {
+      cometPos(t - i * 0.045, _cv);
+      p[i * 3] = _cv.x; p[i * 3 + 1] = _cv.y; p[i * 3 + 2] = _cv.z;
+    }
+    cometTrailGeo.attributes.position.needsUpdate = true;
+  }
+
+  // meteors
+  for (const m of meteors) {
+    m.life -= dt;
+    if (m.life <= 0) {
+      if (m.life < -6 - Math.random() * 6) respawnMeteor(m);
+      m.line.material.opacity = 0;
+      m.head.material.opacity = 0;
+      continue;
+    }
+    m.pos.addScaledVector(m.vel, dt);
+    const p = m.line.geometry.attributes.position.array;
+    p[0] = m.pos.x; p[1] = m.pos.y; p[2] = m.pos.z;
+    p[3] = m.pos.x - m.vel.x * 0.14;
+    p[4] = m.pos.y - m.vel.y * 0.14;
+    p[5] = m.pos.z - m.vel.z * 0.14;
+    m.line.geometry.attributes.position.needsUpdate = true;
+    const fade = Math.min(1, m.life) * Math.min(1, (1.6 + 0.8) - m.life);
+    m.line.material.opacity = fade * 0.9;
+    m.head.material.opacity = fade * 0.8;
+    m.head.position.copy(m.pos);
+  }
+
+  // shockwaves expand and fade
+  for (const w of shockwaves) {
+    if (w.t > 2.2) { w.mesh.visible = false; continue; }
+    w.t += dt;
+    const k = w.t / 2.2;
+    w.mesh.scale.setScalar(0.4 + k * k * 26);
+    w.mat.opacity = (1 - k) * 0.85;
+  }
+
+  // burst particles fly out and fade
+  if (burstT < 2.4) {
+    burstT += dt;
+    const pos = burstGeo.attributes.position.array;
+    const drag = Math.pow(0.55, dt);
+    for (let i = 0; i < BURST_N; i++) {
+      burstVel[i * 3] *= drag; burstVel[i * 3 + 1] *= drag; burstVel[i * 3 + 2] *= drag;
+      pos[i * 3]     += burstVel[i * 3] * dt;
+      pos[i * 3 + 1] += burstVel[i * 3 + 1] * dt;
+      pos[i * 3 + 2] += burstVel[i * 3 + 2] * dt;
+    }
+    burstGeo.attributes.position.needsUpdate = true;
+    burstMat.uniforms.uFade.value = Math.max(0, 1 - burstT / 2.4);
+  } else if (burst.visible) {
+    burst.visible = false;
+  }
+
+  // bloom eases back to its resting strength
+  bloom.strength += (BLOOM_BASE - bloom.strength) * Math.min(1, dt * 2.5);
+
+  controls.update();
+  composer.render();
+
+  // auto-degrade once if the device is struggling
+  frames++; fpsAccum += dt;
+  if (!degraded && frames === 240) {
+    const fps = frames / fpsAccum;
+    if (fps < 34) {
+      degraded = true;
+      const newRatio = Math.max(1, Q.ratio * 0.7);
+      renderer.setPixelRatio(newRatio);
+      composer.setPixelRatio(newRatio);
+      onResize();
+    }
+  }
+}
+
+tick();
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => document.getElementById('loader').classList.add('done'));
+});
+</script>
+</body>
+</html>
