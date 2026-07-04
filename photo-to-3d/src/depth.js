@@ -142,6 +142,52 @@ export function gaussianBlur(field, w, h, sigma) {
   return out;
 }
 
+/** Bilinear resample of a row-major scalar field to new dimensions. */
+export function resampleBilinear(src, sw, sh, dw, dh) {
+  if (sw === dw && sh === dh) return src;
+  const out = new Float32Array(dw * dh);
+  const xr = dw > 1 ? (sw - 1) / (dw - 1) : 0;
+  const yr = dh > 1 ? (sh - 1) / (dh - 1) : 0;
+  for (let y = 0; y < dh; y++) {
+    const fy = y * yr;
+    const y0 = Math.floor(fy);
+    const y1 = Math.min(sh - 1, y0 + 1);
+    const ty = fy - y0;
+    for (let x = 0; x < dw; x++) {
+      const fx = x * xr;
+      const x0 = Math.floor(fx);
+      const x1 = Math.min(sw - 1, x0 + 1);
+      const tx = fx - x0;
+      const a = src[y0 * sw + x0] * (1 - tx) + src[y0 * sw + x1] * tx;
+      const b = src[y1 * sw + x0] * (1 - tx) + src[y1 * sw + x1] * tx;
+      out[y * dw + x] = a * (1 - ty) + b * ty;
+    }
+  }
+  return out;
+}
+
+/**
+ * Pipeline for a precomputed depth map (e.g. from the AI depth estimator):
+ * resample onto the working grid, then smooth/normalize/invert exactly like
+ * the brightness path so all sculpting controls behave identically.
+ *
+ * @param {Float32Array} depthMap  row-major, larger = nearer/higher
+ * @param {number} dw  depth map width
+ * @param {number} dh  depth map height
+ * @param {number} imageW  original image width (sets grid aspect)
+ * @param {number} imageH  original image height
+ */
+export function buildFieldFromMap(depthMap, dw, dh, imageW, imageH, { resolution, smoothing, invert }) {
+  const { w, h } = gridSizeFor(imageW, imageH, resolution);
+  let field = resampleBilinear(depthMap, dw, dh, w, h);
+  field = gaussianBlur(field, w, h, smoothing);
+  field = normalize(field);
+  if (invert) {
+    for (let i = 0; i < field.length; i++) field[i] = 1 - field[i];
+  }
+  return { field, w, h };
+}
+
 /**
  * Full pipeline: image → { field, w, h } where field is a Float32Array
  * heightfield in [0, 1], row-major, top row first.

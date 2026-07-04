@@ -3,10 +3,11 @@
  * App shell: file handling, controls wiring, rebuild scheduling, exports.
  */
 
-import { decodeImage, buildDepthField } from './depth.js';
+import { decodeImage, buildDepthField, buildFieldFromMap } from './depth.js';
 import { buildReliefGeometry, geometryStats } from './mesh.js';
 import { Viewer, MATERIAL_PRESETS } from './viewer.js';
 import { exportSTL, exportGLB, exportOBJ } from './exporters.js';
+import { AiDepth, aiDepthSupported } from './ai-depth.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -16,6 +17,9 @@ const state = {
   building: false,    // a rebuild is in flight
   dirty: false,       // a rebuild was requested while one was in flight
   hasModel: false,
+  aiMap: null,        // { depth, width, height } for the current image
+  aiPending: false,   // an AI estimate is running
+  notice: null,       // shown instead of "Ready" after the next build (e.g. AI fallback)
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +44,15 @@ if (!webglAvailable()) {
 
 const viewer = new Viewer($('viewport'));
 
+const aiDepth = new AiDepth((text) => setStatus(text));
+if (!aiDepthSupported()) {
+  const aiOption = $('source').querySelector('option[value="ai"]');
+  aiOption.disabled = true;
+  $('source-note').textContent =
+    'AI depth needs the app served over http(s) — run "npx serve" in the app ' +
+    'folder. Brightness mode works everywhere, including from a local file.';
+}
+
 // Populate material preset dropdown from the single source of truth.
 const presetSelect = $('material');
 for (const [key, preset] of Object.entries(MATERIAL_PRESETS)) {
@@ -55,6 +68,7 @@ for (const [key, preset] of Object.entries(MATERIAL_PRESETS)) {
 
 function controls() {
   return {
+    source: $('source').value,
     resolution: Number($('resolution').value),
     smoothing: Number($('smoothing').value),
     depth: Number($('depth').value),
@@ -94,6 +108,13 @@ function setStatus(text, isError = false) {
  */
 function requestRebuild() {
   if (!state.image) return;
+  const c = controls();
+  if (c.source === 'ai' && !state.aiMap) {
+    // The neural network result is computed once per image, then cached, so
+    // slider drags after the first estimate rebuild instantly.
+    ensureAiEstimate();
+    return;
+  }
   if (state.building) {
     state.dirty = true;
     return;
@@ -104,14 +125,44 @@ function requestRebuild() {
   requestAnimationFrame(() => setTimeout(runBuild, 0));
 }
 
+function ensureAiEstimate() {
+  if (state.aiPending) return;
+  const image = state.image;
+  state.aiPending = true;
+  setStatus('Analyzing depth with the neural network…');
+  aiDepth
+    .estimate(image)
+    .then((result) => {
+      if (state.image !== image) return; // a different picture was loaded meanwhile
+      state.aiMap = result;
+      if (controls().source === 'ai') requestRebuild();
+    })
+    .catch((err) => {
+      console.error(err);
+      if (state.image !== image) return;
+      $('source').value = 'brightness';
+      state.notice = `AI depth unavailable — using brightness instead. (${err.message})`;
+      requestRebuild();
+    })
+    .finally(() => {
+      state.aiPending = false;
+    });
+}
+
 function runBuild() {
   try {
     const c = controls();
-    const { field, w, h } = buildDepthField(state.image, {
+    const pipelineOpts = {
       resolution: c.resolution,
       smoothing: c.smoothing,
       invert: c.invert,
-    });
+    };
+    const { field, w, h } =
+      c.source === 'ai' && state.aiMap
+        ? buildFieldFromMap(
+            state.aiMap.depth, state.aiMap.width, state.aiMap.height,
+            state.image.width, state.image.height, pipelineOpts)
+        : buildDepthField(state.image, pipelineOpts);
     const geometry = buildReliefGeometry(field, w, h, {
       size: c.size,
       depth: c.depth,
@@ -130,7 +181,12 @@ function runBuild() {
     $('stat-verts').textContent = stats.vertices.toLocaleString();
     $('stat-size').textContent =
       `${stats.size.x.toFixed(0)} × ${stats.size.y.toFixed(0)} × ${stats.size.z.toFixed(1)} mm`;
-    setStatus('Ready');
+    if (state.notice) {
+      setStatus(state.notice, true);
+      state.notice = null;
+    } else {
+      setStatus('Ready');
+    }
   } catch (err) {
     console.error(err);
     setStatus('Could not build the model from this image.', true);
@@ -167,6 +223,7 @@ async function loadFile(file) {
     state.image = image;
     state.imageName = (file.name.replace(/\.[^.]+$/, '') || 'model').slice(0, 60);
     state.hasModel = false; // re-frame the camera for the new picture
+    state.aiMap = null;     // depth belongs to the previous picture
 
     // Thumbnail in the sidebar
     const thumb = $('thumb');
@@ -242,7 +299,7 @@ for (const id of ['resolution', 'smoothing', 'depth', 'base', 'size']) {
     requestRebuild();
   });
 }
-for (const id of ['invert', 'solid']) {
+for (const id of ['invert', 'solid', 'source']) {
   $(id).addEventListener('change', requestRebuild);
 }
 

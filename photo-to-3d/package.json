@@ -5,10 +5,14 @@
   "description": "Turn any picture into a realistic, exportable 3D model — entirely in the browser.",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/main.js --bundle --format=iife --minify --sourcemap --outfile=dist/app.js",
+    "build": "npm run build:app && npm run build:worker && npm run assets",
+    "build:app": "esbuild src/main.js --bundle --format=iife --minify --sourcemap --outfile=dist/app.js",
+    "build:worker": "esbuild src/depth-worker.js --bundle --format=esm --minify --sourcemap --outfile=dist/depth-worker.js",
+    "assets": "node scripts/copy-ort.mjs",
     "dev": "esbuild src/main.js --bundle --format=iife --sourcemap --outfile=dist/app.js --watch --servedir=."
   },
   "dependencies": {
+    "onnxruntime-web": "^1.27.0",
     "three": "^0.166.1"
   },
   "devDependencies": {

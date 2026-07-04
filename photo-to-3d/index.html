@@ -132,6 +132,7 @@
   }
   .check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
   .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .note { margin: 0; font-size: 12px; color: var(--muted); }
 
   select {
     width: 100%;
@@ -218,6 +219,15 @@
     </div>
     <input id="file-input" type="file" accept="image/*" hidden>
     <canvas id="thumb" width="284" height="110"></canvas>
+
+    <h2>Depth source</h2>
+    <select id="source" aria-label="Depth source">
+      <option value="brightness">Brightness (instant)</option>
+      <option value="ai">AI neural depth — local, free</option>
+    </select>
+    <p class="note" id="source-note">AI depth runs a neural network entirely in
+    your browser — free and private, no account or API key. First use downloads
+    the model once (≈25&nbsp;MB), then it's cached.</p>
 
     <h2>Shape</h2>
     <div class="row">
