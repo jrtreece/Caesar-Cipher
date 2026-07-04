@@ -49,8 +49,10 @@ if (!aiDepthSupported()) {
   const aiOption = $('source').querySelector('option[value="ai"]');
   aiOption.disabled = true;
   $('source-note').textContent =
-    'AI depth needs the app served over http(s) — run "npx serve" in the app ' +
-    'folder. Brightness mode works everywhere, including from a local file.';
+    typeof window.__RELIEF_NO_AI === 'string'
+      ? window.__RELIEF_NO_AI
+      : 'AI depth needs the app served over http(s) — run "npx serve" in the ' +
+        'app folder. Brightness mode works everywhere, including from a local file.';
 }
 
 // Populate material preset dropdown from the single source of truth.
@@ -349,6 +351,12 @@ $('export-png').addEventListener('click', guardExport(async () => {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }));
+
+if (window.matchMedia('(pointer: coarse)').matches) {
+  document.querySelector('.hint.orbit').textContent =
+    'Drag to orbit · pinch to zoom · two-finger drag to pan';
+  $('drop-zone').firstElementChild.textContent = 'Tap to choose a picture';
+}
 
 syncSliderLabels();
 applyAppearance();

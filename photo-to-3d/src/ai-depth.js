@@ -11,8 +11,13 @@ const LOCAL_MODEL = 'models/depth-anything-v2-small.onnx';
 const HF_BASE = 'https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/';
 const HF_VARIANTS = ['model_quantized.onnx', 'model_fp16.onnx', 'model.onnx'];
 
-/** AI depth needs a real origin: workers cannot start on file:// pages. */
+/**
+ * AI depth needs a real origin (workers cannot start on file:// pages) and is
+ * switched off entirely in sandboxed hosted builds that cannot fetch the
+ * model — set `window.__RELIEF_NO_AI` to a message string to explain why.
+ */
 export function aiDepthSupported() {
+  if (window.__RELIEF_NO_AI) return false;
   return typeof Worker === 'function' && location.protocol !== 'file:';
 }
 
