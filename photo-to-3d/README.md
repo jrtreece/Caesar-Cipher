@@ -6,9 +6,13 @@ your pictures never leave the browser.
 
 ## Run it
 
-Everything is pre-built. Either:
+Everything is pre-built. Any of:
 
-- **Double-click `index.html`** — it works straight from disk, or
+- **Hosted**: https://jrtreece.github.io/Caesar-Cipher/ (requires GitHub
+  Pages enabled on the repo: Settings → Pages → Source: GitHub Actions —
+  `.github/workflows/deploy-pages.yml` publishes automatically after that),
+- **Double-click `index.html`** — it works straight from disk
+  (brightness mode only; AI depth needs http), or
 - serve the folder: `npx serve photo-to-3d` (or `python3 -m http.server`)
   and open the printed URL.
 
